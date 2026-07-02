@@ -1,0 +1,556 @@
+```html
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, minimal-ui">
+    <title>The Backrooms - Lobby</title>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #050505; overflow: hidden;
+            font-family: 'Courier New', Courier, monospace;
+            touch-action: none; -webkit-user-select: none; user-select: none;
+        }
+        #game-canvas {
+            display: block; width: 100vw; height: 100vh;
+            opacity: 0; transition: opacity 1s ease-in; /* Быстрое появление */
+            position: absolute; top: 0; left: 0;
+        }
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; display: flex; flex-direction: column;
+            justify-content: center; align-items: center;
+            color: #d1b871; text-align: center; z-index: 10;
+        }
+        .menu-screen {
+            background-color: rgba(10, 10, 10, 0.95);
+            padding: 30px; border: 1px solid #332b1a;
+            pointer-events: auto; box-shadow: 0 0 50px #000;
+            width: 85%; max-width: 400px; box-sizing: border-box;
+            display: none; /* Скрываем все экраны по умолчанию */
+        }
+        .menu-screen.active { display: block; }
+
+        h1 { font-size: 26px; margin-bottom: 5px; color: #ebd188; text-shadow: 0 0 10px rgba(235,209,136,0.3); }
+        p { font-size: 14px; color: #8a7a4c; margin-bottom: 25px; line-height: 1.6; }
+        
+        .btn {
+            display: block; width: 100%; padding: 15px 0; margin-bottom: 15px;
+            background-color: #0f0d07; border: 1px solid #7a6a38;
+            color: #ebd188; font-size: 16px; font-family: inherit; font-weight: bold;
+            cursor: pointer; transition: 0.2s;
+        }
+        .btn:active { background-color: #ebd188; color: #000; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; border-color: #444; color: #888; background-color: #111; }
+        .btn.ready { background-color: #1a4d1a; border-color: #33cc33; color: #fff; }
+        
+        .input-code {
+            width: 100%; padding: 15px; margin-bottom: 15px;
+            background-color: #000; border: 1px solid #7a6a38;
+            color: #ebd188; font-size: 32px; font-family: inherit;
+            text-align: center; letter-spacing: 10px;
+            box-sizing: border-box; outline: none; font-weight: bold;
+        }
+        .input-code::placeholder { color: #4a4328; letter-spacing: normal; font-size: 16px; font-weight: normal; }
+
+        .status-text { font-size: 16px; font-weight: bold; margin: 20px 0; padding: 10px; border: 1px dashed #555; }
+        .status-wait { color: #ebd188; border-color: #ebd188; }
+        .status-ok { color: #5cbf5c; border-color: #5cbf5c; background: rgba(92, 191, 92, 0.1); }
+        .status-err { color: #bf5c5c; }
+
+        #glitch-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background-color: #000; opacity: 0; pointer-events: none; z-index: 5;
+        }
+        .joystick-area { position: absolute; bottom: 5%; width: 45%; height: 60%; pointer-events: auto; }
+        #joystick-left { left: 0; }
+        #joystick-right { right: 0; }
+        .crosshair {
+            position: absolute; top: 50%; left: 50%; width: 4px; height: 4px;
+            background: rgba(255, 255, 255, 0.5); border-radius: 50%;
+            transform: translate(-50%, -50%); z-index: 2;
+        }
+    </style>
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- MQTT.js -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+</head>
+<body>
+
+    <canvas id="game-canvas"></canvas>
+    <div id="glitch-overlay"></div>
+    <div class="crosshair" id="crosshair" style="display:none;"></div>
+
+    <div id="ui-layer">
+        
+        <!-- ЭКРАН 1: ГЛАВНОЕ МЕНЮ -->
+        <div class="menu-screen active" id="screen-main">
+            <h1>The Backrooms</h1>
+            <p>Система Лобби (Тест моделей)</p>
+            <button class="btn" id="btn-create-lobby">СОЗДАТЬ ЛОББИ</button>
+            <button class="btn" id="btn-join-lobby">ВОЙТИ ПО КОДУ</button>
+            <button class="btn" id="btn-solo" style="border-color:#555; color:#888;">ИГРАТЬ ОДНОМУ</button>
+        </div>
+
+        <!-- ЭКРАН 2: ЛОББИ ХОСТА (Твое) -->
+        <div class="menu-screen" id="screen-host">
+            <h2>Твое Лобби</h2>
+            <p>Продиктуй этот код сестре:</p>
+            <div style="font-size: 48px; color: #ebd188; letter-spacing: 8px; font-weight:bold; margin-bottom: 20px;" id="host-code-display">---</div>
+            
+            <div class="status-text status-wait" id="host-status">ЖДЕМ ИГРОКА...</div>
+            
+            <button class="btn" id="btn-start-game" disabled>НАЧАТЬ ИГРУ</button>
+            <button class="btn" onclick="location.reload()" style="background:transparent; border:none; font-size:12px;">Отмена</button>
+        </div>
+
+        <!-- ЭКРАН 3: ВВОД КОДА (Сестры) -->
+        <div class="menu-screen" id="screen-join">
+            <h2>Подключение</h2>
+            <input type="tel" id="input-room-code" class="input-code" placeholder="КОД" maxlength="5">
+            <div class="status-text status-err" id="join-error" style="display:none;"></div>
+            
+            <button class="btn" id="btn-connect">ВОЙТИ В ЛОББИ</button>
+            <button class="btn" onclick="location.reload()" style="background:transparent; border:none; font-size:12px;">Отмена</button>
+        </div>
+
+        <!-- ЭКРАН 4: ЛОББИ КЛИЕНТА (Сестры) -->
+        <div class="menu-screen" id="screen-client">
+            <h2>В лобби!</h2>
+            <p>Вы успешно подключились.</p>
+            <div class="status-text status-ok">ЖДЕМ, ПОКА ХОСТ НАЧНЕТ ИГРУ...</div>
+        </div>
+
+    </div>
+
+    <div class="joystick-area" id="joystick-left" style="display:none;"></div>
+    <div class="joystick-area" id="joystick-right" style="display:none;"></div>
+
+<script>
+/** ПРОЦЕДУРНЫЕ ТЕКСТУРЫ **/
+function createWallTexture() {
+    const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256; const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#9e8538'; ctx.fillRect(0, 0, 256, 256); 
+    for (let i = 0; i < 15000; i++) {
+        ctx.fillStyle = Math.random() > 0.5 ? 'rgba(0,0,0,0.08)' : 'rgba(80,60,10,0.08)';
+        ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+    }
+    for (let x = 0; x < 256; x += 16) {
+        ctx.fillStyle = 'rgba(100, 80, 20, 0.3)'; ctx.fillRect(x, 0, 2, 256);
+    }
+    const tex = new THREE.CanvasTexture(canvas); tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping; return tex;
+}
+
+function createFloorTexture() {
+    const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256; const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#3a321a'; ctx.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 40000; i++) {
+        let val = Math.floor(Math.random() * 30) - 15;
+        ctx.fillStyle = `rgb(${50 + val}, ${40 + val}, ${20 + val})`;
+        ctx.fillRect(Math.random() * 256, Math.random() * 256, 2, 2);
+    }
+    const tex = new THREE.CanvasTexture(canvas); tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping; return tex;
+}
+
+function createCeilingTexture() {
+    const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 256; const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#b8b4a7'; ctx.fillRect(0, 0, 256, 256);
+    ctx.strokeStyle = '#858175'; ctx.lineWidth = 2;
+    for (let x = 0; x <= 256; x += 64) {
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 256); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, x); ctx.lineTo(256, x); ctx.stroke();
+    }
+    const tex = new THREE.CanvasTexture(canvas); tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping; return tex;
+}
+
+/** * ПРОСТАЯ И ЗАМЕТНАЯ МОДЕЛЬ ДЛЯ ТЕСТА 
+ * Ярко-красная капсула, светящаяся в темноте!
+ **/
+function createTestModel() {
+    const group = new THREE.Group();
+    
+    // Само тело - красная капсула (цилиндр со скруглениями)
+    const geo = new THREE.CylinderGeometry(0.4, 0.4, 1.8, 16);
+    const mat = new THREE.MeshLambertMaterial({ color: 0xff0000 }); // ЧИСТЫЙ КРАСНЫЙ
+    const body = new THREE.Mesh(geo, mat);
+    body.position.y = 0.9; // Ставим на пол
+    group.add(body);
+
+    // "Лицо" или визор, чтобы понимать куда смотрит игрок (черный кубик спереди)
+    const visorGeo = new THREE.BoxGeometry(0.5, 0.3, 0.3);
+    const visorMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+    const visor = new THREE.Mesh(visorGeo, visorMat);
+    visor.position.set(0, 1.5, 0.3); // Сверху и чуть впереди
+    group.add(visor);
+
+    // Свет вокруг модели, чтобы ее было видно в самых темных углах
+    const glowLight = new THREE.PointLight(0xff0000, 1.5, 8); // Красный свет
+    glowLight.position.set(0, 1.5, 0);
+    group.add(glowLight);
+
+    group.userData = { targetPos: new THREE.Vector3(), targetYaw: 0 };
+    return group;
+}
+
+/** ИГРОВОЙ ДВИЖОК **/
+class Game {
+    constructor(isHostMode) {
+        this.isHost = isHostMode;
+        
+        this.canvas = document.getElementById('game-canvas');
+        this.scene = new THREE.Scene();
+        this.scene.fog = new THREE.FogExp2(0x110f08, 0.05); 
+        this.scene.background = new THREE.Color(0x110f08);
+
+        this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 80);
+        this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false });
+        this.renderer.setSize(window.innerWidth, window.innerHeight);
+
+        this.cellSize = 4; this.chunkRadius = 10;
+        this.player = { height: 2.5, speed: 4.5, moveForward: 0, moveRight: 0, yaw: 0, pitch: 0 };
+
+        // ИСПРАВЛЕНИЕ СПАВНА:
+        // Хост спавнится на Z = 2, смотрит на Север (назад)
+        // Клиент спавнится на Z = -2, смотрит на Юг (вперед)
+        if (this.isHost === true) {
+            this.camera.position.set(0, this.player.height, 2);
+            this.player.yaw = Math.PI; // Поворот на 180
+        } else if (this.isHost === false) {
+            this.camera.position.set(0, this.player.height, -2);
+            this.player.yaw = 0; // Поворот на 0
+        } else {
+            // Одиночный режим
+            this.camera.position.set(0, this.player.height, 0);
+        }
+
+        this.scene.add(new THREE.AmbientLight(0x1a160d, 0.4));
+        this.playerLight = new THREE.PointLight(0xffebb3, 1.2, 15);
+        this.scene.add(this.playerLight);
+
+        this.touches = { moveId: null, lookId: null, moveStart: {x:0, y:0}, lastLook: {x:0, y:0} };
+        this.lastGridX = -999; this.lastGridZ = -999;
+
+        // Модель напарника
+        this.remotePlayerModel = createTestModel();
+        this.remotePlayerModel.position.set(0, -1000, 0); // Прячем изначально
+        this.scene.add(this.remotePlayerModel);
+
+        this.initWorld();
+        this.setupInput();
+        this.clock = new THREE.Clock();
+        this.lastSync = 0;
+        
+        // Для браузерных полноэкранных политик
+        document.documentElement.requestFullscreen().catch(()=>{});
+
+        this.animate = this.animate.bind(this);
+    }
+
+    initWorld() {
+        const maxInst = (this.chunkRadius * 2 + 1) ** 2;
+        const planeGeo = new THREE.PlaneGeometry(this.cellSize, this.cellSize);
+        const wallGeo = new THREE.BoxGeometry(this.cellSize, 5, this.cellSize);
+        
+        this.wallsMesh = new THREE.InstancedMesh(wallGeo, new THREE.MeshLambertMaterial({ map: createWallTexture() }), maxInst);
+        this.floorMesh = new THREE.InstancedMesh(planeGeo, new THREE.MeshLambertMaterial({ map: createFloorTexture() }), maxInst);
+        this.ceilMesh = new THREE.InstancedMesh(planeGeo, new THREE.MeshLambertMaterial({ map: createCeilingTexture() }), maxInst);
+        
+        this.wallsMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        this.floorMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        this.ceilMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+        
+        this.scene.add(this.wallsMesh); this.scene.add(this.floorMesh); this.scene.add(this.ceilMesh);
+        this.updateMazeChunks(0, 0, true);
+    }
+
+    isWall(gx, gz) {
+        // Спавн 3х3 ПУСТОЙ, чтобы вы точно увидели друг друга
+        if (Math.abs(gx) <= 1 && Math.abs(gz) <= 1) return false; 
+        
+        let nx = gx * 0.35; let nz = gz * 0.35;
+        let n1 = Math.sin(nx) + Math.cos(nz);
+        let n2 = Math.sin(nx * 1.5 + 2) * Math.cos(nz * 1.5 + 1);
+        return Math.abs(n1 * 0.5 + n2 * 0.5) > 0.4; 
+    }
+
+    updateMazeChunks(playerGridX, playerGridZ, force = false) {
+        if (!force && playerGridX === this.lastGridX && playerGridZ === this.lastGridZ) return;
+        this.lastGridX = playerGridX; this.lastGridZ = playerGridZ;
+        
+        let wIdx = 0, fIdx = 0, cIdx = 0;
+        const dummy = new THREE.Object3D();
+
+        for (let x = -this.chunkRadius; x <= this.chunkRadius; x++) {
+            for (let z = -this.chunkRadius; z <= this.chunkRadius; z++) {
+                let gx = playerGridX + x; let gz = playerGridZ + z;
+                let posX = gx * this.cellSize; let posZ = gz * this.cellSize;
+
+                if (this.isWall(gx, gz)) {
+                    dummy.position.set(posX, 2.5, posZ); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+                    this.wallsMesh.setMatrixAt(wIdx++, dummy.matrix);
+                } else {
+                    dummy.position.set(posX, 0, posZ); dummy.rotation.set(-Math.PI/2, 0, 0); dummy.updateMatrix();
+                    this.floorMesh.setMatrixAt(fIdx++, dummy.matrix);
+                    
+                    dummy.position.set(posX, 5, posZ); dummy.rotation.set(Math.PI/2, 0, 0); dummy.updateMatrix();
+                    this.ceilMesh.setMatrixAt(cIdx++, dummy.matrix);
+                }
+            }
+        }
+        dummy.position.set(0, -1000, 0); dummy.updateMatrix();
+        for (let i = wIdx; i < this.wallsMesh.count; i++) this.wallsMesh.setMatrixAt(i, dummy.matrix);
+        for (let i = fIdx; i < this.floorMesh.count; i++) this.floorMesh.setMatrixAt(i, dummy.matrix);
+        for (let i = cIdx; i < this.ceilMesh.count; i++) this.ceilMesh.setMatrixAt(i, dummy.matrix);
+        
+        this.wallsMesh.instanceMatrix.needsUpdate = true;
+        this.floorMesh.instanceMatrix.needsUpdate = true;
+        this.ceilMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    setupInput() {
+        document.addEventListener('touchstart', (e) => {
+            for(let i=0; i<e.changedTouches.length; i++) {
+                let t = e.changedTouches[i];
+                if(t.clientX < window.innerWidth / 2) {
+                    this.touches.moveId = t.identifier; this.touches.moveStart = {x: t.clientX, y: t.clientY};
+                } else {
+                    this.touches.lookId = t.identifier; this.touches.lastLook = {x: t.clientX, y: t.clientY};
+                }
+            }
+        }, {passive: false});
+
+        document.addEventListener('touchmove', (e) => {
+            e.preventDefault(); 
+            for(let i=0; i<e.changedTouches.length; i++) {
+                let t = e.changedTouches[i];
+                if(t.identifier === this.touches.moveId) {
+                    let dx = t.clientX - this.touches.moveStart.x; let dy = t.clientY - this.touches.moveStart.y;
+                    this.player.moveRight = Math.max(-1, Math.min(1, dx / 40));
+                    this.player.moveForward = Math.max(-1, Math.min(1, dy / 40)); 
+                } else if(t.identifier === this.touches.lookId) {
+                    let dx = t.clientX - this.touches.lastLook.x; let dy = t.clientY - this.touches.lastLook.y;
+                    this.player.yaw -= dx * 0.005; this.player.pitch -= dy * 0.005;
+                    this.player.pitch = Math.max(-Math.PI/2.2, Math.min(Math.PI/2.2, this.player.pitch));
+                    this.touches.lastLook = {x: t.clientX, y: t.clientY};
+                }
+            }
+        }, {passive: false});
+
+        const handleTouchEnd = (e) => {
+            for(let i=0; i<e.changedTouches.length; i++) {
+                let t = e.changedTouches[i];
+                if(t.identifier === this.touches.moveId) {
+                    this.touches.moveId = null; this.player.moveForward = 0; this.player.moveRight = 0;
+                } else if(t.identifier === this.touches.lookId) { this.touches.lookId = null; }
+            }
+        };
+
+        document.addEventListener('touchend', handleTouchEnd); document.addEventListener('touchcancel', handleTouchEnd);
+        window.addEventListener('resize', () => {
+            this.camera.aspect = window.innerWidth / window.innerHeight;
+            this.camera.updateProjectionMatrix(); this.renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    }
+
+    checkCollision(newX, newZ) {
+        const size = 0.4;
+        const corners = [ {x: newX - size, z: newZ - size}, {x: newX + size, z: newZ - size}, {x: newX - size, z: newZ + size}, {x: newX + size, z: newZ + size} ];
+        for(let c of corners) {
+            if(this.isWall(Math.round(c.x / this.cellSize), Math.round(c.z / this.cellSize))) return true;
+        }
+        return false;
+    }
+
+    animateMultiplayer() {
+        if (!this.remotePlayerModel || !globalRemoteData) return;
+        const m = this.remotePlayerModel;
+        const d = globalRemoteData;
+
+        // Если данных нет больше 3 секунд - напарник стоит на месте (не прячем его сразу)
+        
+        m.userData.targetPos.set(d.x, d.y - this.player.height + 0.9, d.z); // +0.9 это высота нашей капсулы
+        
+        // Первый спавн
+        if (m.position.y === -1000) m.position.copy(m.userData.targetPos);
+        else m.position.lerp(m.userData.targetPos, 0.3); // Сглаживание
+        
+        let diff = d.yaw - m.rotation.y;
+        diff = Math.atan2(Math.sin(diff), Math.cos(diff)); 
+        m.rotation.y += diff * 0.3;
+    }
+
+    animate() {
+        requestAnimationFrame(this.animate);
+        const delta = Math.min(this.clock.getDelta(), 0.1); 
+
+        const cosYaw = Math.cos(this.player.yaw); const sinYaw = Math.sin(this.player.yaw);
+        let moveX = (this.player.moveRight * cosYaw + this.player.moveForward * sinYaw) * this.player.speed * delta;
+        let moveZ = (this.player.moveRight * -sinYaw + this.player.moveForward * cosYaw) * this.player.speed * delta;
+
+        if(!this.checkCollision(this.camera.position.x + moveX, this.camera.position.z)) this.camera.position.x += moveX;
+        if(!this.checkCollision(this.camera.position.x, this.camera.position.z + moveZ)) this.camera.position.z += moveZ;
+
+        let gridX = Math.round(this.camera.position.x / this.cellSize); let gridZ = Math.round(this.camera.position.z / this.cellSize);
+        this.updateMazeChunks(gridX, gridZ);
+
+        this.camera.rotation.set(0, 0, 0, 'YXZ');
+        this.camera.rotateY(this.player.yaw); this.camera.rotateX(this.player.pitch);
+        this.playerLight.position.set(this.camera.position.x, 4.6, this.camera.position.z);
+        this.playerLight.intensity = 1.2 + Math.random() * 0.1;
+        
+        // ОТПРАВКА КООРДИНАТ (10 раз в сек)
+        if (mqttClient && mqttClient.connected && Date.now() - this.lastSync > 100) { 
+            this.lastSync = Date.now();
+            let payload = JSON.stringify({
+                type: 'state',
+                id: myPlayerId,
+                x: this.camera.position.x, y: this.camera.position.y, z: this.camera.position.z,
+                yaw: this.player.yaw
+            });
+            mqttClient.publish(currentTopic, payload, { qos: 0 });
+        }
+
+        this.animateMultiplayer();
+        this.renderer.render(this.scene, this.camera);
+    }
+}
+
+/** СИСТЕМА ЛОББИ И СЕТИ **/
+let mqttClient = null;
+let currentTopic = '';
+const myPlayerId = Math.random().toString(36).substring(2, 9); 
+let globalRemoteData = null; 
+let isHostGlobal = false;
+let clientJoinInterval = null;
+
+function switchScreen(screenId) {
+    document.querySelectorAll('.menu-screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(screenId).classList.add('active');
+}
+
+function generateCode() { return Math.floor(10000 + Math.random() * 90000).toString(); }
+
+function launchGameScene() {
+    document.getElementById('ui-layer').style.display = 'none';
+    document.getElementById('joystick-left').style.display = 'block';
+    document.getElementById('joystick-right').style.display = 'block';
+    document.getElementById('crosshair').style.display = 'block';
+    
+    // Передаем флаг хоста, чтобы правильно заспавнить игроков
+    const game = new Game(isHostGlobal); 
+    document.getElementById('game-canvas').style.opacity = 1;
+    game.animate();
+}
+
+// === ОДИНОЧНАЯ ИГРА ===
+document.getElementById('btn-solo').addEventListener('click', () => {
+    isHostGlobal = null;
+    launchGameScene();
+});
+
+// === ЛОГИКА ХОСТА ===
+document.getElementById('btn-create-lobby').addEventListener('click', () => {
+    isHostGlobal = true;
+    switchScreen('screen-host');
+    
+    const roomCode = generateCode();
+    document.getElementById('host-code-display').innerText = roomCode;
+    currentTopic = 'br_lobby_' + roomCode;
+
+    mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+    mqttClient.on('connect', () => {
+        mqttClient.subscribe(currentTopic);
+    });
+
+    // Хост слушает сообщения в Лобби
+    mqttClient.on('message', (topic, message) => {
+        try {
+            let msg = JSON.parse(message.toString());
+            
+            // Если клиент прислал "join" - сестра зашла в лобби!
+            if (msg.type === 'join' && msg.id !== myPlayerId) {
+                const statusEl = document.getElementById('host-status');
+                statusEl.innerText = 'СЕСТРА ПОДКЛЮЧИЛАСЬ! ГОТОВ К ИГРЕ.';
+                statusEl.className = 'status-text status-ok';
+                
+                const startBtn = document.getElementById('btn-start-game');
+                startBtn.disabled = false;
+                startBtn.classList.add('ready');
+            }
+            
+            // Получение координат во время игры
+            if (msg.type === 'state' && msg.id !== myPlayerId) {
+                globalRemoteData = msg;
+            }
+        } catch (e) {}
+    });
+});
+
+// Хост нажимает "НАЧАТЬ ИГРУ"
+document.getElementById('btn-start-game').addEventListener('click', () => {
+    // Отправляем команду клиенту начать игру (шлем 3 раза для гарантии)
+    let payload = JSON.stringify({ type: 'start' });
+    mqttClient.publish(currentTopic, payload, { qos: 1 });
+    setTimeout(() => mqttClient.publish(currentTopic, payload), 500);
+    setTimeout(() => mqttClient.publish(currentTopic, payload), 1000);
+    
+    launchGameScene();
+});
+
+// === ЛОГИКА КЛИЕНТА (СЕСТРЫ) ===
+document.getElementById('btn-join-lobby').addEventListener('click', () => {
+    isHostGlobal = false;
+    switchScreen('screen-join');
+    document.getElementById('input-room-code').focus();
+});
+
+document.getElementById('btn-connect').addEventListener('click', () => {
+    const code = document.getElementById('input-room-code').value.trim();
+    if(code.length !== 5) {
+        document.getElementById('join-error').innerText = 'Введи 5 цифр!';
+        document.getElementById('join-error').style.display = 'block';
+        return;
+    }
+    
+    document.getElementById('btn-connect').disabled = true;
+    document.getElementById('btn-connect').innerText = 'ПОДКЛЮЧЕНИЕ...';
+    
+    currentTopic = 'br_lobby_' + code;
+    mqttClient = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+    
+    mqttClient.on('connect', () => {
+        mqttClient.subscribe(currentTopic);
+        switchScreen('screen-client');
+        
+        // Отправляем хосту сигнал "я тут" каждую секунду, пока он не нажмет Старт
+        clientJoinInterval = setInterval(() => {
+            mqttClient.publish(currentTopic, JSON.stringify({ type: 'join', id: myPlayerId }));
+        }, 1000);
+    });
+
+    // Клиент слушает команды Хоста
+    mqttClient.on('message', (topic, message) => {
+        try {
+            let msg = JSON.parse(message.toString());
+            
+            // Если хост нажал старт
+            if (msg.type === 'start') {
+                clearInterval(clientJoinInterval); // Хватит слать join
+                launchGameScene();
+            }
+            
+            // Координаты во время игры
+            if (msg.type === 'state' && msg.id !== myPlayerId) {
+                globalRemoteData = msg;
+            }
+        } catch(e) {}
+    });
+});
+</script>
+</body>
+</html>
+
+
+```
